@@ -1,0 +1,132 @@
+// -----------------------------------------------------------------------------
+// Posture metrics (v3 – 2025-06)
+// -----------------------------------------------------------------------------
+// Implements the two posture checks required by ISO/IEC 39794-5:
+//
+//   • horizontalScore   – shoulders square (yaw → facing camera)
+//   • shoulderTiltScore – shoulders level (roll → not tilted)
+//
+// Both metrics rely ONLY on the left & right shoulder landmarks (indices
+// 11 and 12 in MediaPipe Pose). No facial points are needed, so the algorithm
+// still works when the face is partly occluded.
+// -----------------------------------------------------------------------------
+
+/* ─────────────────────────────── Types ─────────────────────────────── */
+
+// Minimal landmark as returned by MediaPipe Pose
+TYPE Landmark:
+    x : FLOAT            // normalised X (0 = left, 1 = right)
+    y : FLOAT            // normalised Y (0 = top,  1 = bottom)
+    z : FLOAT            // normalised depth (larger = farther away)
+    visibility : FLOAT   // OPTIONAL confidence ∈ [0,1]
+
+// Sparse map: key = landmark index, value = Landmark
+TYPE PoseLandmarks = MAP<INTEGER, Landmark>
+
+/* ─────────────────────── Helpers & constants ──────────────────────── */
+
+CONST L_SHOULDER ← 11
+CONST R_SHOULDER ← 12
+
+CONST VIS_THRESHOLD ← 0.3   // landmarks below this are unreliable
+CONST EPSILON       ← 1e-6  // avoid divide-by-zero & degeneracy
+
+// Landmark exists *and* is above VIS_THRESHOLD
+FUNCTION isVisible(l : Landmark?) → BOOLEAN:
+    RETURN (l IS NOT NULL) AND ((l.visibility OR 1) > VIS_THRESHOLD)
+
+/* ───────────────── Metric 1 – horizontalScore (yaw) ───────────────── */
+
+// This detailed variant exposes raw terms for UI / debugging and contains
+// the core algorithm logic.
+
+TYPE HorizontalScoreDebug:
+    score     : FLOAT  // final score ∈ [0,1]
+    angleDeg  : FLOAT  // yaw angle in degrees (0 = frontal, 90 = profile)
+    dx        : FLOAT  // |Δx|  horizontal shoulder gap
+    dz        : FLOAT  // |Δz|  depth        shoulder gap
+    visSym    : FLOAT  // visibility symmetry ∈ [0,1]
+    left      : RECORD { x, y, z, v } // left shoulder snapshot
+    right     : RECORD { x, y, z, v } // right shoulder snapshot
+
+FUNCTION horizontalScoreDetailed(lm : PoseLandmarks) → HorizontalScoreDebug:
+    // Helper that returns a default object for undefined cases
+    FUNCTION blank() → HorizontalScoreDebug:
+        RETURN HorizontalScoreDebug(
+            score    = 0,
+            angleDeg = 90,
+            dx       = 0,
+            dz       = 0,
+            visSym   = 0,
+            left     = { x = NaN, y = NaN, z = NaN, v = 0 },
+            right    = { x = NaN, y = NaN, z = NaN, v = 0 }
+        )
+
+    ls ← lm[L_SHOULDER]          // left  shoulder landmark
+    rs ← lm[R_SHOULDER]          // right shoulder landmark
+
+    // Need both shoulders, both visible, and both with finite depth
+    IF NOT isVisible(ls) OR NOT isVisible(rs) THEN RETURN blank()
+    IF NOT isFinite(ls.z) OR NOT isFinite(rs.z) THEN RETURN blank()
+
+    dx  ← ls.x − rs.x            // horizontal gap
+    dz  ← ls.z − rs.z            // depth      gap
+    len ← hypot(dx, dz)          // Euclidean distance in X–Z plane
+    IF len < EPSILON THEN RETURN blank()  // shoulders on top of each other?
+
+    absDx ← ABS(dx)
+    absDz ← ABS(dz)
+
+    geom   ← absDx / len                       // = cos θ  (0…1)
+    visSym ← 1 − ABS((ls.visibility OR 1) − (rs.visibility OR 1))
+    angle  ← atan2(absDz, absDx) * 180 / π     // convert to degrees
+
+    RETURN HorizontalScoreDebug(
+        score    = geom * visSym,              // penalise asymmetric visibility
+        angleDeg = angle,
+        dx       = absDx,
+        dz       = absDz,
+        visSym   = visSym,
+        left     = { x = ls.x, y = ls.y, z = ls.z, v = ls.visibility OR 0 },
+        right    = { x = rs.x, y = rs.y, z = rs.z, v = ls.visibility OR 0 }
+    )
+
+/* ──────────────── Metric 2 – shoulderTiltScore (roll) ─────────────── */
+
+/**
+ * Shoulders level in the image.
+ * RETURNS 1 when shoulder line is perfectly horizontal,
+ *         0 when shoulder line is vertical.
+ */
+FUNCTION shoulderTiltScore(lm : PoseLandmarks) → FLOAT:
+    ls ← lm[L_SHOULDER]
+    rs ← lm[R_SHOULDER]
+    IF NOT isVisible(ls) OR NOT isVisible(rs) THEN RETURN 0
+
+    dx ← ls.x − rs.x
+    dy ← ls.y − rs.y
+    // Degenerate case: shoulders coincide
+    IF ABS(dx) < EPSILON AND ABS(dy) < EPSILON THEN RETURN 0
+
+    angle ← atan2(ABS(dy), ABS(dx))            // 0 … π/2 (rad)
+    RETURN 1 − angle / (π / 2)                 // linear mapping to [0,1]
+
+/* ────────────────── Combined "Shoulder Squareness" Metric ────────────────── */
+
+/**
+ * Computes a single quality score 'q' by combining the horizontal (yaw)
+ * and tilt (roll) scores using their geometric mean. This single value is
+ * suitable for automated pass/fail checks.
+ *
+ * RETURNS A single quality score q ∈ [0,1].
+ */
+FUNCTION shoulderSquareness(lm : PoseLandmarks) -> FLOAT:
+    s_yaw  <- horizontalScore(lm)
+    s_roll <- shoulderTiltScore(lm)
+
+    // The geometric mean penalizes failure in either yaw or roll
+    q <- SQRT(s_yaw * s_roll)
+
+    // Handle potential NaN if inputs were negative (though they shouldn't be)
+    IF isNaN(q) THEN RETURN 0
+    ELSE RETURN q
