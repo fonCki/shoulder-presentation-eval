@@ -20,6 +20,16 @@ A lightweight **web app** that rates how well a portrait meets the shoulder‑pr
 
 ---
 
+## 📄 Technical Paper
+
+For the full methodology, data set description, and evaluation results, see the companion
+paper:  
+[**“A Quantitative Method for Shoulder Presentation Evaluation” (PDF)**](supplementary-material/02238_s243942_spe.pdf)  
+(Accepts the upcoming ISO/IEC 29794-5 definition of *shoulder presentation* and shows
+≈ 0.80 Pearson correlation with human labels)
+
+---
+
 ## Algorithm Overview
 
 Two independent scalar quality metrics are computed from the shoulder pair **(landmark 11 = L, 12 = R)**.
