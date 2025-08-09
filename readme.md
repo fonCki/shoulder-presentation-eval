@@ -77,7 +77,7 @@ The SPE algorithm is effective across a diverse range of subjects and poses. The
 
 ```bash
 # 1 – Clone & install deps
-$ git clone https://github.com/YOUR‑USERNAME/shoulder‑presentation‑eval.git
+$ git clone https://github.com/fonCki/shoulder-presentation‑eval.git
 $ cd shoulder‑presentation‑eval
 $ npm install
 
